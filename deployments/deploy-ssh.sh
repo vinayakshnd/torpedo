@@ -132,8 +132,9 @@ for i in $(seq 1 600) ; do
     echo "Error: Torpedo finished with $state state"
     describe_pod_then_exit
   elif [ "$state" == "Running" ]; then
-    echo ""
-    kubectl logs -f torpedo
+    echo ":: Torpedo is running. Logs in torpedo.log"
+    rm torpedo.log 2> /dev/null || true
+    kubectl logs -f torpedo > torpedo.log
   elif [ "$state" == "Completed" ]; then
     echo "Success: Torpedo finished with $state state"
     exit 0
