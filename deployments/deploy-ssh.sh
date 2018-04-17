@@ -8,6 +8,10 @@ if [ -z "${SCALE_FACTOR}" ]; then
     SCALE_FACTOR="10"
 fi
 
+if [ -z "${LOG_FILE}" ]; then
+    LOG_FILE="torpedo.log"
+fi
+
 SKIP_ARG=""
 if [ -n "$SKIP_TESTS" ]; then
     SKIP_ARG="--skip=$(echo $SKIP_TESTS | sed -e 's/,/ | /g')"
@@ -132,9 +136,9 @@ for i in $(seq 1 600) ; do
     echo "Error: Torpedo finished with $state state"
     describe_pod_then_exit
   elif [ "$state" == "Running" ]; then
-    echo ":: Torpedo is running. Logs in torpedo.log"
+    echo "Torpedo is running. Logs in torpedo.log"
     rm torpedo.log 2> /dev/null || true
-    kubectl logs -f torpedo > torpedo.log
+    kubectl logs -f torpedo > ${LOG_FILE}
   elif [ "$state" == "Completed" ]; then
     echo "Success: Torpedo finished with $state state"
     exit 0
