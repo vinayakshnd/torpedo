@@ -309,9 +309,11 @@ func (d *portworx) ValidateCreateVolume(name string, params map[string]string) e
 		}
 
 		if len(vols) != 1 {
+			errCause := fmt.Sprintf("Volume: %s inspect result has invalid length. Expected:1 Actual:%v", name, len(vols))
+			logrus.Warnf(errCause)
 			return nil, true, &ErrFailedToInspectVolume{
 				ID:    name,
-				Cause: fmt.Sprintf("Volume inspect result has invalid length. Expected:1 Actual:%v", len(vols)),
+				Cause: errCause,
 			}
 		}
 
