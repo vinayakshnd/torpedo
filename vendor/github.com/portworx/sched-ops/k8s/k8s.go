@@ -18,7 +18,7 @@ import (
 	"github.com/sirupsen/logrus"
 	apps_api "k8s.io/api/apps/v1beta2"
 	batch_v1 "k8s.io/api/batch/v1"
-	"k8s.io/api/core/v1"
+	v1 "k8s.io/api/core/v1"
 	rbac_v1 "k8s.io/api/rbac/v1"
 	storage_api "k8s.io/api/storage/v1"
 	apiextensionsv1beta1 "k8s.io/apiextensions-apiserver/pkg/apis/apiextensions/v1beta1"
@@ -33,6 +33,7 @@ import (
 	"k8s.io/apimachinery/pkg/selection"
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/apimachinery/pkg/util/wait"
+	"k8s.io/apimachinery/pkg/version"
 	"k8s.io/apimachinery/pkg/watch"
 	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
@@ -72,6 +73,7 @@ type Ops interface {
 	StorageClassOps
 	PersistentVolumeClaimOps
 	SnapshotOps
+	GroupSnapshotOps
 	RuleOps
 	SecretOps
 	ConfigMapOps
@@ -80,8 +82,12 @@ type Ops interface {
 	ClusterPairOps
 	MigrationOps
 	ObjectOps
+	GetVersion() (*version.Info, error)
 	SetConfig(config *rest.Config)
-	SetClient(client *kubernetes.Clientset, snapClient rest.Interface, storkClient storkclientset.Interface, apiExtensionClient apiextensionsclient.Interface, dynamicInterface dynamic.Interface)
+	SetClient(client kubernetes.Interface, snapClient rest.Interface, storkClient storkclientset.Interface, apiExtensionClient apiextensionsclient.Interface, dynamicInterface dynamic.Interface)
+
+	// private methods for unit tests
+	privateMethods
 }
 
 // EventOps is an interface to put and get k8s events
@@ -377,6 +383,25 @@ type SnapshotOps interface {
 	ValidateSnapshotData(name string, retry bool, timeout, retryInterval time.Duration) error
 }
 
+// GroupSnapshotOps is an interface to perform k8s GroupVolumeSnapshot operations
+type GroupSnapshotOps interface {
+	// GetGroupSnapshot returns the group snapshot for the given name and namespace
+	GetGroupSnapshot(name, namespace string) (*v1alpha1.GroupVolumeSnapshot, error)
+	// ListGroupSnapshots lists all group snapshots for the given namespace
+	ListGroupSnapshots(namespace string) (*v1alpha1.GroupVolumeSnapshotList, error)
+	// CreateGroupSnapshot creates the given group snapshot
+	CreateGroupSnapshot(*v1alpha1.GroupVolumeSnapshot) (*v1alpha1.GroupVolumeSnapshot, error)
+	// UpdateGroupSnapshot updates the given group snapshot
+	UpdateGroupSnapshot(*v1alpha1.GroupVolumeSnapshot) (*v1alpha1.GroupVolumeSnapshot, error)
+	// DeleteGroupSnapshot deletes the group snapshot with the given name and namespace
+	DeleteGroupSnapshot(name, namespace string) error
+	// ValidateGroupSnapshot checks if the group snapshot with given name and namespace is in ready state
+	//  If retry is true, the validation will be retried with given timeout and retry internal
+	ValidateGroupSnapshot(name, namespace string, retry bool, timeout, retryInterval time.Duration) error
+	// GetSnapshotsForGroupSnapshot returns all child snapshots for the group snapshot
+	GetSnapshotsForGroupSnapshot(name, namespace string) ([]*snap_v1.VolumeSnapshot, error)
+}
+
 // RuleOps is an interface to perform operations for k8s stork rule
 type RuleOps interface {
 	// GetRule fetches the given stork rule
@@ -429,6 +454,8 @@ type ClusterPairOps interface {
 	GetClusterPair(string, string) (*v1alpha1.ClusterPair, error)
 	// ListClusterPairs gets all the ClusterPairs
 	ListClusterPairs(string) (*v1alpha1.ClusterPairList, error)
+	// UpdateClusterPair updates the ClusterPair
+	UpdateClusterPair(*v1alpha1.ClusterPair) (*v1alpha1.ClusterPair, error)
 	// DeleteClusterPair deletes the ClusterPair
 	DeleteClusterPair(string, string) error
 	// ValidateClusterPair validates clusterpair status
@@ -459,10 +486,17 @@ type ObjectOps interface {
 	UpdateObject(object runtime.Object) (runtime.Object, error)
 }
 
+type privateMethods interface {
+	initK8sClient() error
+}
+
 // CustomResource is for creating a Kubernetes TPR/CRD
 type CustomResource struct {
 	// Name of the custom resource
 	Name string
+
+	// ShortNames are short names for the resource.  It must be all lowercase.
+	ShortNames []string
 
 	// Plural of the custom resource in plural
 	Plural string
@@ -486,7 +520,7 @@ var (
 )
 
 type k8sOps struct {
-	client             *kubernetes.Clientset
+	client             kubernetes.Interface
 	snapClient         rest.Interface
 	storkClient        storkclientset.Interface
 	apiExtensionClient apiextensionsclient.Interface
@@ -521,7 +555,7 @@ func NewInstance(config string) (Ops, error) {
 
 // Set the k8s clients
 func (k *k8sOps) SetClient(
-	client *kubernetes.Clientset,
+	client kubernetes.Interface,
 	snapClient rest.Interface,
 	storkClient storkclientset.Interface,
 	apiExtensionClient apiextensionsclient.Interface,
@@ -543,13 +577,21 @@ func (k *k8sOps) initK8sClient() error {
 		}
 
 		// Quick validation if client connection works
-		_, err = k.client.ServerVersion()
+		_, err = k.client.Discovery().ServerVersion()
 		if err != nil {
 			return fmt.Errorf("failed to connect to k8s server: %s", err)
 		}
 
 	}
 	return nil
+}
+
+func (k *k8sOps) GetVersion() (*version.Info, error) {
+	if err := k.initK8sClient(); err != nil {
+		return nil, err
+	}
+
+	return k.client.Discovery().ServerVersion()
 }
 
 // Namespace APIs - BEGIN
@@ -2657,6 +2699,121 @@ func (k *k8sOps) DeleteSnapshotData(name string) error {
 
 // Snapshot APIs - END
 
+// GroupSnapshot APIs - BEGIN
+
+func (k *k8sOps) GetGroupSnapshot(name, namespace string) (*v1alpha1.GroupVolumeSnapshot, error) {
+	if err := k.initK8sClient(); err != nil {
+		return nil, err
+	}
+
+	return k.storkClient.Stork().GroupVolumeSnapshots(namespace).Get(name, meta_v1.GetOptions{})
+}
+
+func (k *k8sOps) ListGroupSnapshots(namespace string) (*v1alpha1.GroupVolumeSnapshotList, error) {
+	if err := k.initK8sClient(); err != nil {
+		return nil, err
+	}
+
+	return k.storkClient.Stork().GroupVolumeSnapshots(namespace).List(meta_v1.ListOptions{})
+}
+
+func (k *k8sOps) CreateGroupSnapshot(snap *v1alpha1.GroupVolumeSnapshot) (*v1alpha1.GroupVolumeSnapshot, error) {
+	if err := k.initK8sClient(); err != nil {
+		return nil, err
+	}
+
+	return k.storkClient.Stork().GroupVolumeSnapshots(snap.Namespace).Create(snap)
+}
+
+func (k *k8sOps) UpdateGroupSnapshot(snap *v1alpha1.GroupVolumeSnapshot) (*v1alpha1.GroupVolumeSnapshot, error) {
+	if err := k.initK8sClient(); err != nil {
+		return nil, err
+	}
+
+	return k.storkClient.Stork().GroupVolumeSnapshots(snap.Namespace).Update(snap)
+}
+
+func (k *k8sOps) DeleteGroupSnapshot(name, namespace string) error {
+	if err := k.initK8sClient(); err != nil {
+		return err
+	}
+
+	return k.storkClient.Stork().GroupVolumeSnapshots(namespace).Delete(name, &meta_v1.DeleteOptions{
+		PropagationPolicy: &deleteForegroundPolicy,
+	})
+}
+
+func (k *k8sOps) ValidateGroupSnapshot(name, namespace string, retry bool, timeout, retryInterval time.Duration) error {
+	t := func() (interface{}, bool, error) {
+		snap, err := k.GetGroupSnapshot(name, namespace)
+		if err != nil {
+			return "", true, err
+		}
+
+		if len(snap.Status.VolumeSnapshots) == 0 {
+			return "", true, &ErrSnapshotNotReady{
+				ID:    name,
+				Cause: fmt.Sprintf("group snapshot has 0 child snapshots yet"),
+			}
+		}
+
+		if snap.Status.Stage == v1alpha1.GroupSnapshotStageFinal {
+			if snap.Status.Status == v1alpha1.GroupSnapshotSuccessful {
+				return "", false, nil
+			}
+
+			if snap.Status.Status == v1alpha1.GroupSnapshotFailed {
+				return "", false, &ErrSnapshotFailed{
+					ID:    name,
+					Cause: fmt.Sprintf("group snapshot is in failed state"),
+				}
+			}
+		}
+
+		return "", true, &ErrSnapshotNotReady{
+			ID:    name,
+			Cause: fmt.Sprintf("stage: %s status: %s", snap.Status.Stage, snap.Status.Status),
+		}
+	}
+
+	if retry {
+		if _, err := task.DoRetryWithTimeout(t, timeout, retryInterval); err != nil {
+			return err
+		}
+	} else {
+		if _, _, err := t(); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func (k *k8sOps) GetSnapshotsForGroupSnapshot(name, namespace string) ([]*snap_v1.VolumeSnapshot, error) {
+	snap, err := k.GetGroupSnapshot(name, namespace)
+	if err != nil {
+		return nil, err
+	}
+
+	if len(snap.Status.VolumeSnapshots) == 0 {
+		return nil, fmt.Errorf("group snapshot: [%s] %s does not have any volume snapshots", namespace, name)
+	}
+
+	snapshots := make([]*snap_v1.VolumeSnapshot, 0)
+	for _, snapStatus := range snap.Status.VolumeSnapshots {
+		snap, err := k.GetSnapshot(snapStatus.VolumeSnapshotName, namespace)
+		if err != nil {
+			return nil, err
+		}
+
+		snapshots = append(snapshots, snap)
+	}
+
+	return snapshots, nil
+}
+
+// GroupSnapshot APIs - END
+
 // Rule APIs - BEGIN
 func (k *k8sOps) GetRule(name, namespace string) (*v1alpha1.Rule, error) {
 	if err := k.initK8sClient(); err != nil {
@@ -2829,6 +2986,14 @@ func (k *k8sOps) CreateClusterPair(pair *v1alpha1.ClusterPair) error {
 	return err
 }
 
+func (k *k8sOps) UpdateClusterPair(pair *v1alpha1.ClusterPair) (*v1alpha1.ClusterPair, error) {
+	if err := k.initK8sClient(); err != nil {
+		return nil, err
+	}
+
+	return k.storkClient.Stork().ClusterPairs(pair.Namespace).Update(pair)
+}
+
 func (k *k8sOps) DeleteClusterPair(name string, namespace string) error {
 	if err := k.initK8sClient(); err != nil {
 		return err
@@ -2978,6 +3143,10 @@ func (k *k8sOps) ListEvents(namespace string, opts meta_v1.ListOptions) (*v1.Eve
 
 // CRD APIs - BEGIN
 func (k *k8sOps) CreateCRD(resource CustomResource) error {
+	if err := k.initK8sClient(); err != nil {
+		return err
+	}
+
 	crdName := fmt.Sprintf("%s.%s", resource.Plural, resource.Group)
 	crd := &apiextensionsv1beta1.CustomResourceDefinition{
 		ObjectMeta: meta_v1.ObjectMeta{
@@ -2988,9 +3157,10 @@ func (k *k8sOps) CreateCRD(resource CustomResource) error {
 			Version: resource.Version,
 			Scope:   resource.Scope,
 			Names: apiextensionsv1beta1.CustomResourceDefinitionNames{
-				Singular: resource.Name,
-				Plural:   resource.Plural,
-				Kind:     resource.Kind,
+				Singular:   resource.Name,
+				Plural:     resource.Plural,
+				Kind:       resource.Kind,
+				ShortNames: resource.ShortNames,
 			},
 		},
 	}
@@ -3004,6 +3174,10 @@ func (k *k8sOps) CreateCRD(resource CustomResource) error {
 }
 
 func (k *k8sOps) ValidateCRD(resource CustomResource, timeout, retryInterval time.Duration) error {
+	if err := k.initK8sClient(); err != nil {
+		return err
+	}
+
 	crdName := fmt.Sprintf("%s.%s", resource.Plural, resource.Group)
 	return wait.Poll(timeout, retryInterval, func() (bool, error) {
 		crd, err := k.apiExtensionClient.ApiextensionsV1beta1().CustomResourceDefinitions().Get(crdName, meta_v1.GetOptions{})

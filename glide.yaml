@@ -88,7 +88,7 @@ import:
   - ptypes/struct
   - ptypes/timestamp
 - package: github.com/libopenstorage/stork
-  version: migration_scope
+  version: master
   subpackages:
   - pkg/apis/stork
   - pkg/apis/stork/v1alpha1
