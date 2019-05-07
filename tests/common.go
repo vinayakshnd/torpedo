@@ -12,6 +12,7 @@ import (
 	"github.com/onsi/ginkgo"
 	"github.com/onsi/gomega"
 	"github.com/portworx/sched-ops/task"
+	"github.com/portworx/torpedo/drivers/asg"
 	"github.com/portworx/torpedo/drivers/node"
 	"github.com/sirupsen/logrus"
 
@@ -29,6 +30,9 @@ import (
 	// import portworx driver to invoke it's init
 	_ "github.com/portworx/torpedo/drivers/volume/portworx"
 	"github.com/portworx/torpedo/pkg/log"
+
+	// import asg driver to invoke it's init
+	_ "github.com/portworx/torpedo/drivers/asg/gke"
 )
 
 const (
@@ -37,6 +41,7 @@ const (
 	schedulerCliFlag                   = "scheduler"
 	nodeDriverCliFlag                  = "node-driver"
 	storageDriverCliFlag               = "storage-driver"
+	asgDriverCliFlag                   = "asg-driver"
 	specDirCliFlag                     = "spec-dir"
 	appListCliFlag                     = "app-list"
 	logLocationCliFlag                 = "log-location"
@@ -49,6 +54,7 @@ const (
 	defaultScheduler      = "k8s"
 	defaultNodeDriver     = "ssh"
 	defaultStorageDriver  = "pxd"
+	defaultAsgDriver      = "gke"
 	defaultLogLocation    = "/mnt/torpedo_support_dir"
 	defaultAppScaleFactor = 1
 	// TODO: These are Portworx specific versions and will not work with other storage drivers.
@@ -83,6 +89,9 @@ func InitInstance() {
 	expect(err).NotTo(haveOccurred())
 
 	err = Inst().N.Init()
+	expect(err).NotTo(haveOccurred())
+
+	err = Inst().A.Init()
 	expect(err).NotTo(haveOccurred())
 }
 
@@ -336,6 +345,7 @@ type Torpedo struct {
 	S                           scheduler.Driver
 	V                           volume.Driver
 	N                           node.Driver
+	A                           asg.Driver
 	SpecDir                     string
 	AppList                     []string
 	LogLoc                      string
@@ -347,16 +357,18 @@ type Torpedo struct {
 // ParseFlags parses command line flags
 func ParseFlags() {
 	var err error
-	var s, n, v, specDir, logLoc, appListCSV string
+	var s, n, v, a, specDir, logLoc, appListCSV string
 	var schedulerDriver scheduler.Driver
 	var volumeDriver volume.Driver
 	var nodeDriver node.Driver
+	var asgDriver asg.Driver
 	var appScaleFactor int
 	var volUpgradeVersion, volBaseVersion string
 
 	flag.StringVar(&s, schedulerCliFlag, defaultScheduler, "Name of the scheduler to us")
 	flag.StringVar(&n, nodeDriverCliFlag, defaultNodeDriver, "Name of the node driver to use")
 	flag.StringVar(&v, storageDriverCliFlag, defaultStorageDriver, "Name of the storage driver to use")
+	flag.StringVar(&a, asgDriverCliFlag, defaultAsgDriver, "Name of the asg driver to use")
 	flag.StringVar(&specDir, specDirCliFlag, defaultSpecsRoot, "Root directory containing the application spec files")
 	flag.StringVar(&logLoc, logLocationCliFlag, defaultLogLocation,
 		"Path to save logs/artifacts upon failure. Default: /mnt/torpedo_support_dir")
@@ -380,6 +392,8 @@ func ParseFlags() {
 		logrus.Fatalf("Cannot find volume driver for %v. Err: %v\n", v, err)
 	} else if nodeDriver, err = node.Get(n); err != nil {
 		logrus.Fatalf("Cannot find node driver for %v. Err: %v\n", n, err)
+	} else if asgDriver, err = asg.Get(a); err != nil {
+		logrus.Fatalf("Cannot find asg driver for %v. Err: %v\n", a, err)
 	} else if err := os.MkdirAll(logLoc, os.ModeDir); err != nil {
 		logrus.Fatalf("Cannot create path %s for saving support bundle. Error: %v", logLoc, err)
 	} else {
@@ -389,6 +403,7 @@ func ParseFlags() {
 				S:                           schedulerDriver,
 				V:                           volumeDriver,
 				N:                           nodeDriver,
+				A:                           asgDriver,
 				SpecDir:                     specDir,
 				LogLoc:                      logLoc,
 				ScaleFactor:                 appScaleFactor,
