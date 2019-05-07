@@ -16,6 +16,7 @@ type gke struct {
 func (g *gke) Init() error {
 
 	logrus.Info("Initializing GKE client.")
+
 	return nil
 }
 
