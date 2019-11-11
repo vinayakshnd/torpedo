@@ -210,13 +210,14 @@ func (s *SSH) TestConnection(n node.Node, options node.ConnectionOpts) error {
 
 // RebootNode reboots given node
 func (s *SSH) RebootNode(n node.Node, options node.RebootNodeOpts) error {
-	rebootCmd := "sudo reboot"
+	rebootCmd := "reboot"
 	if options.Force {
 		rebootCmd = rebootCmd + " -f"
 	}
 
 	t := func() (interface{}, bool, error) {
 		out, err := s.doCmd(n, options.ConnectionOpts, rebootCmd, true)
+		logrus.Printf("-----output: %v, Error: %v-----", out, err)
 		return out, true, err
 	}
 
@@ -411,14 +412,16 @@ func (s *SSH) doCmdUsingPod(n node.Node, options node.ConnectionOpts, cmd string
 				Cause: fmt.Sprintf("failed to run command in pod: %v err: %v", debugPod, err),
 			}
 		}
-
+		logrus.Infof("Successfully ran cmd %v", output)
 		return output, false, nil
 	}
 
 	logrus.Debugf("Running command on pod %s [%s]", debugPod.Name, cmds)
 	output, err := task.DoRetryWithTimeout(t, options.Timeout, options.TimeBeforeRetry)
 	if err != nil {
+		logrus.Errorf("Error running cmd %v on pod %v", cmds, err)
 		return "", err
+
 	}
 	return output.(string), nil
 }
